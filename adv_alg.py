@@ -5,26 +5,28 @@ import matplotlib.pyplot as plt
 from streamz import Stream
 from statsmodels.tsa.arima.model import ARIMA
 import warnings
+import time
 
 warnings.filterwarnings("ignore")
 
 TICKER = "AAPL"
-PERIOD = "1y"
-INTERVAL = "1d"
+PERIOD = "6mo"
+INTERVAL = "1h"
+FEE = 0.0005        # 0.05% per trade
 
-EMA_SPAN = 20          # EMA window
-ARIMA_ORDER = (5, 1, 0)  # (p, d, q)
-STREAM_WINDOW = 50     # number of data points used for ARIMA
+EMA_SPAN = int(20 * 6.5)         # 20 days * 6.5 trading hours per day
+ARIMA_ORDER = (2, 0, 1)          # (p, d, q)
+STREAM_WINDOW = int(50 * 6.5)    # number of data points used for ARIMA
 
 INITIAL_CAPITAL = 100_000
 
 def compute_ema(series, span=20):
     return series.ewm(span=span, adjust=False).mean()
 
-def arima_forecast(price_series, order=(5, 1, 0)):
-    model = ARIMA(price_series, order=order)
-    fitted_model = model.fit()
-    forecast = fitted_model.forecast(steps=1)
+def arima_forecast(price_series):
+    model = ARIMA(price_series, order=ARIMA_ORDER)
+    model = model.fit()
+    forecast = model.forecast(steps=1)
     return forecast.iloc[0]
 
 def trading_strategy(df):
@@ -48,9 +50,10 @@ def trading_strategy(df):
         and current_price > current_ema
         and arima_pred > current_price
     ):
-        shares_to_buy = portfolio["cash"] // current_price
+        shares_to_buy = int(portfolio["cash"] // (current_price * (1 + FEE)))
+        cost = shares_to_buy * current_price * (1 + FEE)
         portfolio["shares"] = shares_to_buy
-        portfolio["cash"] -= shares_to_buy * current_price
+        portfolio["cash"] -= cost
         portfolio["position"] = "LONG"
         signal = "BUY"
         # print(f"BUY @ {current_price:.2f}")
@@ -60,7 +63,8 @@ def trading_strategy(df):
         portfolio["position"] == "LONG"
         and (current_price < current_ema or arima_pred < current_price)
     ):
-        portfolio["cash"] += portfolio["shares"] * current_price
+        proceeds = portfolio["shares"] * current_price * (1 - FEE)
+        portfolio["cash"] += proceeds
         portfolio["shares"] = 0
         portfolio["position"] = "FLAT"
         signal = "SELL"
@@ -82,20 +86,30 @@ def trading_strategy(df):
 def process_stream(row):
     buffer.append(row)
 
-    # Keep buffer size fixed
+    # keep buffer size fixed
     if len(buffer) > STREAM_WINDOW:
         buffer.pop(0)
 
     df = pd.DataFrame(buffer).set_index("timestamp")
     df["EMA"] = compute_ema(df["Close"], EMA_SPAN)
 
-    # Only run ARIMA if we have enough data
-    if len(df) >= STREAM_WINDOW:
+    # ARIMA works better on stationary data, so we use log returns
+    log_returns = np.log(df["Close"]).diff().dropna()
+    # only run ARIMA if enough data
+    if len(log_returns) >= STREAM_WINDOW - 1:
         df["ARIMA_Pred"] = np.nan
-        arima_price = arima_forecast(df["Close"], ARIMA_ORDER)
+        current_price = float(df["Close"].iloc[-1])
+        arima_pred_returns = arima_forecast(log_returns)
+        arima_price = current_price * np.exp(arima_pred_returns)
         df.iloc[-1, df.columns.get_loc("ARIMA_Pred")] = arima_price
 
         trading_strategy(df)
+
+def metrics():
+    portfolio_return = (portfolio_history[-1]["portfolio_value"] - INITIAL_CAPITAL) / INITIAL_CAPITAL
+    annualized_return = (1 + portfolio_return) ** ((252 * 6.5) / len(portfolio_history)) - 1 # approx 252 trading days per year
+    print(f"Porfolio Return: {portfolio_return:.2%}")
+    print(f"Annualized Return: {annualized_return:.2%}")
 
 def main():
     global data
@@ -103,11 +117,14 @@ def main():
     global portfolio_history
     global buffer
     
+    start = time.time()
+
     ticker = yf.Ticker(TICKER)
     data = ticker.history(
         period=PERIOD,
         interval=INTERVAL
     )
+    data = data.between_time("09:30", "16:00")  # filter for regular trading hours
     data = data[["Close"]].dropna()
 
     portfolio = {
@@ -129,6 +146,9 @@ def main():
         "timestamp": timestamp,
         "Close": float(row["Close"])
     })
+
+    metrics()
+    print(f"Execution Time: {time.time() - start:.2f} seconds")
 
     # plot results
     history_df = pd.DataFrame(portfolio_history)
