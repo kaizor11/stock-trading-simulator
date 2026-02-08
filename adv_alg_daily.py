@@ -18,7 +18,7 @@ EMA_SPAN = 20
 ARIMA_ORDER = (1, 0, 0)     # (p, d, q)
 STREAM_WINDOW = 50          # number of data points used for ARIMA
 
-INITIAL_CAPITAL = 100_000
+INITIAL_CAPITAL = 100000
 
 def compute_ema(series, span=20):
     return series.ewm(span=span, adjust=False).mean()
@@ -107,18 +107,30 @@ def process_stream(row):
         trading_strategy(df)
 
 def metrics():
-    periods = len(portfolio_history)
-    periods_per_year = 252  # approx 252 trading days per year
-    # std_returns = np.std(portfolio_history['equity'])
-    # annual_risk_free_rate = 0.02
+    returns = np.asarray(portfolio_history['returns'])
+    equity = np.asarray(portfolio_history['equity'])
     
-    portfolio_return = (portfolio_history[-1]["equity"] - INITIAL_CAPITAL) / INITIAL_CAPITAL
-    annualized_return = (1 + portfolio_return) ** (periods_per_year / periods) - 1 
-    # sharpe_ratio = (annualized_return - annual_risk_free_rate) / (np.sqrt(periods_per_year) * std_returns)
+    # annualize returns
+    total_return = np.prod(1 + returns) - 1
+    periods_per_year = 252  # approx 252 trading days per year
+    years = len(returns) / periods_per_year
+    annualized_return = (1 + total_return) ** (1 / years) - 1
 
-    print(f"Porfolio Return: {portfolio_return:.2%}")
+    # sharpe ratio: measures risk-adjusted relative returns
+    risk_free_rate = 0.02
+    volatility = np.std(returns, ddof=1)
+    annualized_volatility = volatility * np.sqrt(periods_per_year)
+    sharpe_ratio = (annualized_return - risk_free_rate) / annualized_volatility
+
+    # max_drawdown: greatest movement from a high point to a low point
+    running_peak = np.maximum.accumulate(equity)
+    drawdowns = (equity - running_peak) / running_peak
+    max_drawdown = drawdowns.min()
+
+    # print results
     print(f"Annualized Return: {annualized_return:.2%}")
-    # print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+    print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+    print(f"Max Drawdown: {max_drawdown:.2%}")
 
 def main():
     global data
@@ -155,21 +167,21 @@ def main():
         "Open": float(row["Open"]),
         "Close": float(row["Close"])
     })
-
+    
+    # results
+    portfolio_history = pd.DataFrame(portfolio_history)
+    portfolio_history.set_index("timestamp", inplace=True)
+    portfolio_history['returns'] = portfolio_history['equity'].pct_change().fillna(0)
     metrics()
     print(f"Execution Time: {time.time() - start:.2f} seconds")
 
     # plot results
-    history_df = pd.DataFrame(portfolio_history)
-    history_df.set_index("timestamp", inplace=True)
-    history_df['returns'] = history_df['equity'].pct_change().fillna(0)
-
     fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 6))
 
     # PLOT: portfolio value over time
     axes[0].plot(
-        history_df.index,
-        history_df["equity"],
+        portfolio_history.index,
+        portfolio_history["equity"],
         label="Equity"
     )
     axes[0].set_title("Equity Over Time")
@@ -177,15 +189,15 @@ def main():
 
     # PLOT: price and signals
     axes[1].plot(
-        history_df.index,
-        history_df["close_price"],
+        portfolio_history.index,
+        portfolio_history["close_price"],
         label=f"{TICKER} Close Price"
     )
     axes[1].set_title(f"{TICKER} Price Over Time")
     axes[1].set_xlabel("Time")
 
-    buy_signals = history_df[history_df["signal"] == "BUY"]
-    sell_signals = history_df[history_df["signal"] == "SELL"]
+    buy_signals = portfolio_history[portfolio_history["signal"] == "BUY"]
+    sell_signals = portfolio_history[portfolio_history["signal"] == "SELL"]
 
     axes[1].scatter(
         buy_signals.index,
