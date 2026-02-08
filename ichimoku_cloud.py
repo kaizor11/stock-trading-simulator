@@ -3,107 +3,315 @@ import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
+from streamz import Stream
+import time
 
-def add_n_hr_periods(n, start):
+TICKER = "AAPL"
+PERIOD = "1y"
+INTERVAL = "1d"
+FEE = 0.0005        # 0.05% per trade
+STREAM_WINDOW = 52
+
+INITIAL_CAPITAL = 100_000
+
+def add_n_periods(n, start, interval="d"):
     prev = start
     new_time_vals = []
-    for i in range(n):
-        # if before 15:30: +1 hour
-        if prev.hour < 15:
-            prev = prev + pd.Timedelta(hours=1)
-
-        # if 15:30: +1 biz day, set to 9:30
-        else:
+    if interval == "d": #daily data
+        for i in range(n):
             prev = prev + pd.offsets.BDay(1)
-            prev = prev.replace(hour=9,minute=30)
-        new_time_vals.append(prev)
+            new_time_vals.append(prev)
+    elif interval == "h": #hourly data
+        for i in range(n):
+            # if before 15:30: +1 hour
+            if prev.hour < 15:
+                prev = prev + pd.Timedelta(hours=1)
+
+            # if 15:30: +1 biz day, set to 9:30
+            else:
+                prev = prev + pd.offsets.BDay(1)
+                prev = prev.replace(hour=9,minute=30)
+            new_time_vals.append(prev)
     return pd.Series(new_time_vals)
 
 
+def run_ichimoku_trade(df, senkou_df):
+    #assume all-in trading
+    # conservative strategy
+    # BUY if:
+    #   opening price above conversion line
+    #   base line below conversion line
+    #   senkou span A above B
+    # SELL if:
+    #   opening price below conversion line 
+    #   base line above conversion line
+    #   senkou span B above A
+    # else HOLD
+
+    current_price = float(df["Open"].iloc[-1])
+    conversion = float(df["Conversion_Line"].iloc[-1])
+    base = float(df["Base_Line"].iloc[-1])
+    timestamp = df.index[-1]
+    signal = "HOLD"
+
+    senkou_A = senkou_df["Senkou_A"].iloc[-27]
+    senkou_B = senkou_df["Senkou_B"].iloc[-27]
+
+    # indicates crossing of price into cloud
+    # 0 = no cross
+    # -1 = entering downwards
+    # 1 = exiting upwards
+    cross_cloud = 0
+
+    # likewise, indicates crossing of base line and conversion line
+    # 0 = no cross
+    # -1 = conversion line crosses under
+    # 1 = conversion line crosses over
+    cross_lines = 0
+
+    # check if value in the cloud
+    if (current_price >= senkou_A and current_price <= senkou_B) or (current_price <= senkou_A and current_price >= senkou_B):
+        # check if new crossover
+        #   price from day before would be outside upper or lower boundary
+        if df["Open"].iloc[-2] >= max(senkou_df["Senkou_A"].iloc[-28], senkou_df["Senkou_B"].iloc[-28]): # outside upper boundary, indicates decline and sell signal
+            cross_cloud = -1
+        # elif  df["Open"].iloc[-2] >= min(senkou_A, senkou_B): # outside lower boundary, indicates increase
+        #     pass
+    else:
+        # check if price is newly leaving
+        #   price from day before would be within bounds
+        if df["Open"].iloc[-2] <= min(senkou_df["Senkou_A"].iloc[-28], senkou_df["Senkou_B"].iloc[-28]):
+            cross_cloud = 1
+
+    # see if lines crossed 
+    if conversion > base:
+        if df["Conversion_Line"].iloc[-2] <  df["Base_Line"].iloc[-2]: #indicates cross in positive direction
+            cross_lines = 1
+    elif base > conversion:
+          if df["Conversion_Line"].iloc[-2] >  df["Base_Line"].iloc[-2]: #indicates cross in negative direction
+            cross_lines = -1      
+    
+    # BUY signal
+    if (
+        portfolio["position"] == "FLAT"
+        #and conversion > base
+        #and current_price < conversion
+        and (cross_cloud == 1 or cross_lines == 1)
+    ):
+        shares_to_buy = int(portfolio["cash"] // (current_price * (1 + FEE)))
+        cost = shares_to_buy * current_price * (1 + FEE)
+        portfolio["shares"] = shares_to_buy
+        portfolio["cash"] -= cost
+        portfolio["position"] = "LONG"
+        signal = "BUY"
+        # print(f"BUY @ {current_price:.2f}")
+
+    # SELL signal
+    elif (
+        portfolio["position"] == "LONG"
+        #and (current_price < conversion)
+        and (conversion < base)
+        #and (cross_cloud == -1 or cross_lines == -1)
+        and current_price < min(senkou_A, senkou_B)
+    ):
+        proceeds = portfolio["shares"] * current_price * (1 - FEE)
+        portfolio["cash"] += proceeds
+        portfolio["shares"] = 0
+        portfolio["position"] = "FLAT"
+        signal = "SELL"
+        # print(f"SELL @ {current_price:.2f}")
+
+    total_value = portfolio["cash"] + portfolio["shares"] * current_price
+    # print(f"Portfolio Value: {total_value:.2f}")
+
+    portfolio_history.append({
+        "timestamp": timestamp,
+        "close_price": current_price,
+        "signal": signal,
+        "position": portfolio["position"],
+        "shares": portfolio["shares"],
+        "cash": portfolio["cash"],
+        "portfolio_value": total_value,
+    })
+
+def process_stream(row):
+    buffer.append(row)
+
+    # keep buffer size fixed
+    if len(buffer) > STREAM_WINDOW:
+        buffer.pop(0)
+
+    df = pd.DataFrame(buffer).set_index("timestamp")
+    # print(df.head())
+ 
+    # only run ichimoku if enough data
+    if df.shape[0] >= STREAM_WINDOW - 26:
+        df["Conversion_Line"] = df["Base_Line"] = np.nan
+
+        # conversion line/tenkan-sen
+        # (max(high) + min(low))/2
+        # of the previous 9 periods
+        #print(tenkan_df.head(10))
+        max_highs = df['High'].rolling(9).max()
+        min_lows = df['Low'].rolling(9).min()
+        # min_low = tenkan_df['Low'].max()
+        df['Conversion_Line'] = (max_highs + min_lows)/2.0
+        #print(data.head(30))
+
+        # baseline/kijun-sen
+        # (max(high) + min(low))/2 
+        # of the prev 26 periods
+        max_highs = df['High'].rolling(26).max()
+        min_lows = df['Low'].rolling(26).min()
+        df['Base_Line'] = (max_highs + min_lows)/2.0
+        #print(df.head(30))
+
+        # leading span A (senkou span A)
+        leading_span_index = pd.concat([pd.Series(df.index), add_n_periods(26, df.index[-1])])
+        #print(pd.Series(df.index))
+        #print(leading_span_index)
+        senkou_df = df[['Conversion_Line', 'Base_Line']]
+        senkou_df['Senkou_A'] = (senkou_df['Conversion_Line'] + senkou_df['Base_Line']) / 2.0
+
+        # leading span B
+        max_highs = df['High'].rolling(52).max()
+        min_lows = df['Low'].rolling(52).min()
+        senkou_df['Senkou_B'] = (max_highs + min_lows) / 2.0
+
+        senkou_df = senkou_df.reindex(leading_span_index)
+        senkou_df['Senkou_A'] = senkou_df['Senkou_A'].shift(26)
+        senkou_df['Senkou_B'] = senkou_df['Senkou_B'].shift(26)
+        senkou_df = senkou_df[['Senkou_A', 'Senkou_B']]
+        #print(senkou_df.tail(50))
+
+        # lagging span (chikou span)
+        df['Lagging_Span'] = (max_highs + min_lows) / 2.0
+        df['Lagging_Span'] = df['Lagging_Span'].shift(26)
+        
+        run_ichimoku_trade(df, senkou_df)
+
+def metrics():
+    portfolio_return = (portfolio_history[-1]["portfolio_value"] - INITIAL_CAPITAL) / INITIAL_CAPITAL
+    annualized_return = (1 + portfolio_return) ** ((252 * 6.5) / len(portfolio_history)) - 1 # approx 252 trading days per year
+    print(f"Porfolio Return: {portfolio_return:.2%}")
+    print(f"Annualized Return: {annualized_return:.2%}")    
+
+
+
 def main():
+
     global data
-    global capital
-    global capital_hist
+    global portfolio
+    global portfolio_history
+    global buffer
 
-    ticker = yf.Ticker("AAPL")
+    start = time.time()
+    buffer = []
+    
+    ticker = yf.Ticker(TICKER)
     data = ticker.history(
-        period="200d",       
-        interval="1h"
+        period=PERIOD,
+        interval=INTERVAL
     )
-    # print(data.shape)
-    #print(data.head(10))
-    closing_prices = data["Close"].tolist()
+    #data = data[["Close"]].dropna()
 
-    # conversion line/tenkan-sen
-    # (max(high) + min(low))/2
-    # of the previous 9 periods
-    #print(tenkan_df.head(10))
-    max_highs = data['High'].rolling(9).max()
-    min_lows = data['Low'].rolling(9).min()
-    # min_low = tenkan_df['Low'].max()
-    data['Conversion_Line'] = (max_highs + min_lows)/2.0
-    #print(data.head(30))
+    portfolio = {
+        "cash": INITIAL_CAPITAL,
+        "shares": 0,
+        "position": "FLAT"  # FLAT or LONG
+    }
+
+    portfolio_history = []
+
+    price_stream = Stream()
+
+    price_stream.sink(process_stream)
+
+    for timestamp, row in data.iterrows():
+        price_stream.emit({
+        "timestamp": timestamp,
+        "High": float(row["High"]),
+        "Low": float(row["Low"]),
+        "Close": float(row["Close"]),
+        "Open": float(row["Open"])
+    })
+
+    metrics()
+    print(f"Execution Time: {time.time() - start:.2f} seconds")
+
+    # # results
+    # fig, ax = plt.subplots(figsize=(12,12))
+    # sns.set_style("whitegrid")
+    # plot_df = data[['Open', 'Conversion_Line', 'Base_Line', 'Lagging_Span']]
+
+    # sns.lineplot(data=plot_df,ax=ax)
+    # sns.lineplot(data=senkou_df,ax=ax)
+    # plt.xlabel("Time (hours)")
+    # plt.xlim(data.index[-50], senkou_df.index[-20])
+    # plt.grid()
+
+    # #fill green where leading signals indicate uptrend
+    # plt.fill_between(senkou_df.index, 
+    #                  senkou_df['Senkou_A'], 
+    #                  senkou_df['Senkou_B'], 
+    #                  where=np.where(senkou_df['Senkou_A'] > senkou_df['Senkou_B'],1,0),
+    #                  color="green", 
+    #                  alpha=.2)
     
+    # #fill red where leading signals indicate downtrend
+    # plt.fill_between(senkou_df.index, 
+    #                 senkou_df['Senkou_A'], 
+    #                 senkou_df['Senkou_B'], 
+    #                 where=np.where(senkou_df['Senkou_A'] <= senkou_df['Senkou_B'],1,0),
+    #                 color="red", 
+    #                 alpha=.2)
+    # plt.ylabel("Price ($)")
 
-    # baseline/kijun-sen
-    # (max(high) + min(low))/2 
-    # of the prev 26 periods
-    max_highs = data['High'].rolling(26).max()
-    min_lows = data['Low'].rolling(26).min()
-    data['Base_Line'] = (max_highs + min_lows)/2.0
-    print(data.head(30))
+    # plt.show()
 
+       # plot results
+    history_df = pd.DataFrame(portfolio_history)
+    history_df.set_index("timestamp", inplace=True)
 
-    # leading span A (senkou span A)
-    leading_span_index = pd.concat([pd.Series(data.index), add_n_hr_periods(26, data.index[-1])])
-    print(pd.Series(data.index))
-    print(leading_span_index)
-    senkou_df = data[['Conversion_Line', 'Base_Line']]
-    senkou_df['Senkou_A'] = (senkou_df['Conversion_Line'] + senkou_df['Base_Line']) / 2.0
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 6))
 
-    # leading span B
-    max_highs = data['High'].rolling(52).max()
-    min_lows = data['Low'].rolling(52).min()
-    senkou_df['Senkou_B'] = (max_highs + min_lows) / 2.0
+    # PLOT: portfolio value over time
+    axes[0].plot(
+        history_df.index,
+        history_df["portfolio_value"],
+        label="Portfolio Value"
+    )
+    axes[0].set_title("Portfolio Value Over Time")
+    axes[0].set_xlabel("Time")
 
-    senkou_df = senkou_df.reindex(leading_span_index)
-    senkou_df['Senkou_A'] = senkou_df['Senkou_A'].shift(26)
-    senkou_df['Senkou_B'] = senkou_df['Senkou_B'].shift(26)
-    senkou_df = senkou_df[['Senkou_A', 'Senkou_B']]
-    #print(senkou_df.tail(50))
+    # PLOT: price and signals
+    axes[1].plot(
+        history_df.index,
+        history_df["close_price"],
+        label=f"{TICKER} Close Price"
+    )
+    axes[1].set_title(f"{TICKER} Price Over Time")
+    axes[1].set_xlabel("Time")
 
-    # lagging span (chikou span)
-    data['Lagging_Span'] = (max_highs + min_lows) / 2.0
-    data['Lagging_Span'] = data['Lagging_Span'].shift(26)
+    buy_signals = history_df[history_df["signal"] == "BUY"]
+    sell_signals = history_df[history_df["signal"] == "SELL"]
 
-    # results
-    fig, ax = plt.subplots(figsize=(12,12))
-    sns.set_style("whitegrid")
-    plot_df = data[['Close', 'Conversion_Line', 'Base_Line', 'Lagging_Span']]
+    axes[1].scatter(
+        buy_signals.index,
+        buy_signals["close_price"],
+        marker="^",
+        label="BUY"
+    )
+    axes[1].scatter(
+        sell_signals.index,
+        sell_signals["close_price"],
+        marker="v",
+        label="SELL"
+    )
 
-    sns.lineplot(data=plot_df,ax=ax)
-    sns.lineplot(data=senkou_df,ax=ax)
-    plt.xlabel("Time (hours)")
-    plt.xlim(data.index[-50], senkou_df.index[-20])
-    plt.grid()
+    axes[1].legend()
 
-    #fill green where leading signals indicate uptrend
-    plt.fill_between(senkou_df.index, 
-                     senkou_df['Senkou_A'], 
-                     senkou_df['Senkou_B'], 
-                     where=np.where(senkou_df['Senkou_A'] > senkou_df['Senkou_B'],1,0),
-                     color="green", 
-                     alpha=.2)
-    
-    #fill red where leading signals indicate downtrend
-    plt.fill_between(senkou_df.index, 
-                    senkou_df['Senkou_A'], 
-                    senkou_df['Senkou_B'], 
-                    where=np.where(senkou_df['Senkou_A'] <= senkou_df['Senkou_B'],1,0),
-                    color="red", 
-                    alpha=.2)
-    plt.ylabel("Price ($)")
-
+    plt.tight_layout()
     plt.show()
     
 
