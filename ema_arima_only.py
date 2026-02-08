@@ -6,19 +6,22 @@ from streamz import Stream
 from statsmodels.tsa.arima.model import ARIMA
 import warnings
 import time
+import sys
 
 warnings.filterwarnings("ignore")
 
-TICKER = "TSLA"
-PERIOD = "1y"
-INTERVAL = "1d"
-FEE = 0.0005                # 0.05% per trade
+# TICKER = "TSLA"
+# PERIOD = "1y"
+# INTERVAL = "1d"
+# FEE = 0.0005                # 0.05% per trade
 
-EMA_SPAN = 20                    
-ARIMA_ORDER = (1, 0, 0)     # (p, d, q)
-STREAM_WINDOW = 50          # number of data points used for ARIMA
+# EMA_SPAN = 20                    
+# ARIMA_ORDER = (1, 0, 0)     # (p, d, q)
+# STREAM_WINDOW = 50          # number of data points used for ARIMA
 
-INITIAL_CAPITAL = 100000
+# INITIAL_CAPITAL = 100_000
+
+from config import *
 
 def compute_ema(series, span=20):
     return series.ewm(span=span, adjust=False).mean()
@@ -136,6 +139,8 @@ def metrics():
     max_drawdown = drawdowns.min()
 
     # print results
+    print(f"\nEMA + ARIMA:")
+    print(f"Initial Capital: {INITIAL_CAPITAL * EMA_ARIMA_SPLIT}")
     print(f"Final Equity: ${equity[-1]:.2f}")
     print(f"Total Return: {total_return:.2%}")
     print(f"Annualized Return: {annualized_return:.2%}")
@@ -158,7 +163,7 @@ def main():
     data = data[["Open", "Close", "Volume"]]
 
     portfolio = {
-        "cash": INITIAL_CAPITAL,
+        "cash": INITIAL_CAPITAL * EMA_ARIMA_SPLIT,
         "shares": 0,
         "position": "FLAT"  # FLAT or LONG
     }
