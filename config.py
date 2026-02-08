@@ -1,0 +1,19 @@
+
+# UNIVERSAL
+TICKER = "TSLA"
+PERIOD = "1y"
+INTERVAL = "1d"
+FEE = 0.0005                # 0.05% per trade
+INITIAL_CAPITAL = 100_000
+STREAM_WINDOW = 52
+
+# EMA ARIMA
+EMA_SPAN = 20                    
+ARIMA_ORDER = (1, 0, 0)     # (p, d, q)
+EMA_ARIMA_SPLIT = 1/3
+
+# ICHIMOKU
+ICHIMOKU_SPLIT = 1/3
+
+# MAINWAVE
+MAINWAVE_SPLIT = 1/3
