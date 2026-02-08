@@ -54,5 +54,5 @@ if  __name__ == '__main__':
     detector = MainWaveDetector(df)
     result_df = detector.detect_main_wave(strict=True)
     cols = ['Close', 'MA5', 'MA20', 'is_main_wave']
-    result_df.to_csv('result.csv')
+    # result_df.to_csv('result.csv')
     print(result_df[cols].tail(10))
