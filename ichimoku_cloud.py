@@ -186,8 +186,7 @@ def process_stream(row):
         #print(senkou_df.tail(50))
 
         # lagging span (chikou span)
-        df['Lagging_Span'] = (max_highs + min_lows) / 2.0
-        df['Lagging_Span'] = df['Lagging_Span'].shift(26)
+        df['Lagging_Span'] = df['Close'].shift(-26)
         
         run_ichimoku_trade(df, senkou_df)
 
