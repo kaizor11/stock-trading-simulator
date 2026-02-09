@@ -6,13 +6,14 @@ import seaborn as sns
 from streamz import Stream
 import time
 
-TICKER = "AAPL"
-PERIOD = "1y"
-INTERVAL = "1d"
-FEE = 0.0005        # 0.05% per trade
-STREAM_WINDOW = 52
+# TICKER = "AAPL"
+# PERIOD = "1y"
+# INTERVAL = "1d"
+# FEE = 0.0005        # 0.05% per trade
+# STREAM_WINDOW = 52
 
-INITIAL_CAPITAL = 100_000
+# INITIAL_CAPITAL = 100_000
+from config import *
 
 def add_n_periods(n, start, interval="d"):
     prev = start
@@ -131,7 +132,7 @@ def run_ichimoku_trade(df, senkou_df):
         "position": portfolio["position"],
         "shares": portfolio["shares"],
         "cash": portfolio["cash"],
-        "portfolio_value": total_value,
+        "equity": total_value,
     })
 
 def process_stream(row):
@@ -185,18 +186,39 @@ def process_stream(row):
         #print(senkou_df.tail(50))
 
         # lagging span (chikou span)
-        df['Lagging_Span'] = (max_highs + min_lows) / 2.0
-        df['Lagging_Span'] = df['Lagging_Span'].shift(26)
+        df['Lagging_Span'] = df['Close'].shift(-26)
         
         run_ichimoku_trade(df, senkou_df)
 
 def metrics():
-    portfolio_return = (portfolio_history[-1]["portfolio_value"] - INITIAL_CAPITAL) / INITIAL_CAPITAL
-    annualized_return = (1 + portfolio_return) ** ((252 * 6.5) / len(portfolio_history)) - 1 # approx 252 trading days per year
-    print(f"Porfolio Return: {portfolio_return:.2%}")
-    print(f"Annualized Return: {annualized_return:.2%}")    
+    returns = np.asarray(portfolio_history['returns'])
+    equity = np.asarray(portfolio_history['equity'])
+    
+    # annualize returns
+    total_return = np.prod(1 + returns) - 1
+    periods_per_year = 252  # approx 252 trading days per year
+    years = len(returns) / periods_per_year
+    annualized_return = (1 + total_return) ** (1 / years) - 1
 
+    # sharpe ratio: measures risk-adjusted relative returns
+    risk_free_rate = 0.02
+    volatility = np.std(returns, ddof=1)
+    annualized_volatility = volatility * np.sqrt(periods_per_year)
+    sharpe_ratio = (annualized_return - risk_free_rate) / annualized_volatility
 
+    # max_drawdown: greatest movement from a high point to a low point
+    running_peak = np.maximum.accumulate(equity)
+    drawdowns = (equity - running_peak) / running_peak
+    max_drawdown = drawdowns.min()
+
+    # print results
+    print(f"\nICHIMOKU:")
+    print(f"Initial Capital: {INITIAL_CAPITAL * ICHIMOKU_SPLIT}")
+    print(f"Final Equity: ${equity[-1]:.2f}")
+    print(f"Total Return: {total_return:.2%}")
+    print(f"Annualized Return: {annualized_return:.2%}")
+    print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+    print(f"Max Drawdown: {max_drawdown:.2%}")
 
 def main():
 
@@ -216,7 +238,7 @@ def main():
     #data = data[["Close"]].dropna()
 
     portfolio = {
-        "cash": INITIAL_CAPITAL,
+        "cash": INITIAL_CAPITAL * ICHIMOKU_SPLIT,
         "shares": 0,
         "position": "FLAT"  # FLAT or LONG
     }
@@ -235,9 +257,6 @@ def main():
         "Close": float(row["Close"]),
         "Open": float(row["Open"])
     })
-
-    metrics()
-    print(f"Execution Time: {time.time() - start:.2f} seconds")
 
     # # results
     # fig, ax = plt.subplots(figsize=(12,12))
@@ -269,32 +288,36 @@ def main():
 
     # plt.show()
 
-       # plot results
-    history_df = pd.DataFrame(portfolio_history)
-    history_df.set_index("timestamp", inplace=True)
+     # results
+    portfolio_history = pd.DataFrame(portfolio_history)
+    portfolio_history.set_index("timestamp", inplace=True)
+    portfolio_history['returns'] = portfolio_history['equity'].pct_change().fillna(0)
+    metrics()
+    print(f"Execution Time: {time.time() - start:.2f} seconds")
 
+    # plot results
     fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 6))
 
     # PLOT: portfolio value over time
     axes[0].plot(
-        history_df.index,
-        history_df["portfolio_value"],
-        label="Portfolio Value"
+        portfolio_history.index,
+        portfolio_history["equity"],
+        label="Equity"
     )
-    axes[0].set_title("Portfolio Value Over Time")
+    axes[0].set_title("Equity Over Time")
     axes[0].set_xlabel("Time")
 
     # PLOT: price and signals
     axes[1].plot(
-        history_df.index,
-        history_df["close_price"],
+        portfolio_history.index,
+        portfolio_history["close_price"],
         label=f"{TICKER} Close Price"
     )
     axes[1].set_title(f"{TICKER} Price Over Time")
     axes[1].set_xlabel("Time")
 
-    buy_signals = history_df[history_df["signal"] == "BUY"]
-    sell_signals = history_df[history_df["signal"] == "SELL"]
+    buy_signals = portfolio_history[portfolio_history["signal"] == "BUY"]
+    sell_signals = portfolio_history[portfolio_history["signal"] == "SELL"]
 
     axes[1].scatter(
         buy_signals.index,
@@ -312,7 +335,9 @@ def main():
     axes[1].legend()
 
     plt.tight_layout()
-    plt.show()
+    # plt.show()
+
+    return portfolio_history
     
 
 if __name__ == "__main__":
