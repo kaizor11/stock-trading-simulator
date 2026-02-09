@@ -11,6 +11,8 @@ import time
 # INTERVAL = "1d"
 # FEE = 0.0005        # 0.05% per trade
 # STREAM_WINDOW = 52
+PERIOD_LONG = 26 #usual is 26, based on avg # of Japanese trading month. US has 20 days on average
+PERIOD_SHORT = 9
 
 # INITIAL_CAPITAL = 100_000
 from config import *
@@ -38,16 +40,6 @@ def add_n_periods(n, start, interval="d"):
 
 def run_ichimoku_trade(df, senkou_df):
     #assume all-in trading
-    # conservative strategy
-    # BUY if:
-    #   opening price above conversion line
-    #   base line below conversion line
-    #   senkou span A above B
-    # SELL if:
-    #   opening price below conversion line 
-    #   base line above conversion line
-    #   senkou span B above A
-    # else HOLD
 
     current_price = float(df["Open"].iloc[-1])
     conversion = float(df["Conversion_Line"].iloc[-1])
@@ -146,15 +138,15 @@ def process_stream(row):
     # print(df.head())
  
     # only run ichimoku if enough data
-    if df.shape[0] >= STREAM_WINDOW - 26:
+    if df.shape[0] >= STREAM_WINDOW - PERIOD_LONG:
         df["Conversion_Line"] = df["Base_Line"] = np.nan
 
         # conversion line/tenkan-sen
         # (max(high) + min(low))/2
         # of the previous 9 periods
         #print(tenkan_df.head(10))
-        max_highs = df['High'].rolling(9).max()
-        min_lows = df['Low'].rolling(9).min()
+        max_highs = df['High'].rolling(PERIOD_SHORT).max()
+        min_lows = df['Low'].rolling(PERIOD_SHORT).min()
         # min_low = tenkan_df['Low'].max()
         df['Conversion_Line'] = (max_highs + min_lows)/2.0
         #print(data.head(30))
@@ -162,31 +154,31 @@ def process_stream(row):
         # baseline/kijun-sen
         # (max(high) + min(low))/2 
         # of the prev 26 periods
-        max_highs = df['High'].rolling(26).max()
-        min_lows = df['Low'].rolling(26).min()
+        max_highs = df['High'].rolling(PERIOD_LONG).max()
+        min_lows = df['Low'].rolling(PERIOD_LONG).min()
         df['Base_Line'] = (max_highs + min_lows)/2.0
         #print(df.head(30))
 
         # leading span A (senkou span A)
-        leading_span_index = pd.concat([pd.Series(df.index), add_n_periods(26, df.index[-1])])
+        leading_span_index = pd.concat([pd.Series(df.index), add_n_periods(PERIOD_LONG, df.index[-1])])
         #print(pd.Series(df.index))
         #print(leading_span_index)
         senkou_df = df[['Conversion_Line', 'Base_Line']]
         senkou_df['Senkou_A'] = (senkou_df['Conversion_Line'] + senkou_df['Base_Line']) / 2.0
 
         # leading span B
-        max_highs = df['High'].rolling(52).max()
-        min_lows = df['Low'].rolling(52).min()
+        max_highs = df['High'].rolling(PERIOD_LONG*2).max()
+        min_lows = df['Low'].rolling(PERIOD_LONG*2).min()
         senkou_df['Senkou_B'] = (max_highs + min_lows) / 2.0
 
         senkou_df = senkou_df.reindex(leading_span_index)
-        senkou_df['Senkou_A'] = senkou_df['Senkou_A'].shift(26)
-        senkou_df['Senkou_B'] = senkou_df['Senkou_B'].shift(26)
+        senkou_df['Senkou_A'] = senkou_df['Senkou_A'].shift(PERIOD_LONG)
+        senkou_df['Senkou_B'] = senkou_df['Senkou_B'].shift(PERIOD_LONG)
         senkou_df = senkou_df[['Senkou_A', 'Senkou_B']]
         #print(senkou_df.tail(50))
 
         # lagging span (chikou span)
-        df['Lagging_Span'] = df['Close'].shift(-26)
+        df['Lagging_Span'] = df['Close'].shift(-PERIOD_LONG)
         
         run_ichimoku_trade(df, senkou_df)
 
