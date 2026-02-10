@@ -21,7 +21,7 @@ def main():
     global capital
     global capital_hist
 
-    ticker = yf.Ticker("AAPL")
+    ticker = yf.Ticker("TSLA")
     data = ticker.history(
         period="1y",
         interval="1h"
@@ -57,10 +57,19 @@ def main():
 
     # results
     print(f"Final Capital: ${capital:.2f}")
+    plt.figure(1)
     pd.Series(capital_hist).plot()
     plt.title(f"Capital Over Time\nTicker: {ticker.ticker}, Window Size: {window_size} hours")
     plt.xlabel("Time (hours)")
     plt.ylabel("Capital ($)")
+
+    plt.figure(2)
+    pd.Series(closing_prices).plot()
+    pd.Series(ema).plot()
+    plt.title(f"EMA for {ticker.ticker}, Window Size: {window_size} hours")
+    plt.xlabel("Time (hours)")
+    plt.ylabel("Closing Price ($)")
+    plt.legend(["Closing Price", "EMA"])
     plt.show()
 
 if __name__ == "__main__":
